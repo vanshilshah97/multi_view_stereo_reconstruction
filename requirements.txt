@@ -1,0 +1,13 @@
+matplotlib 
+opencv-python 
+pillow 
+scipy 
+nose 
+imageio 
+tqdm
+pyrender - pip
+trimesh - pip
+transforms3d - pip
+celluloid - pip
+k3d
+open3d
