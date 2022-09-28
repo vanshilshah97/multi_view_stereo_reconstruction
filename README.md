@@ -32,7 +32,7 @@ the depth planes to be swept over and stacking each resulting cost map along the
 
 
 Cost volume visualisation
-![alt text](images/volume_np.gif =480x480)
+![alt text](images/volume_np.gif | height=400)
 
 
 
