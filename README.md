@@ -32,7 +32,9 @@ the depth planes to be swept over and stacking each resulting cost map along the
 
 
 Cost volume visualisation
-![alt text](images/volume_np.gif | height=400)
+<p align="center">
+  <img width="480" height="480" src="https://github.com/vanshilshah97/multi_view_stereo_reconstruction/blob/master/images/volume_np.gif">
+</p>
 
 
 
