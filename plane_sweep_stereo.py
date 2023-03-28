@@ -1,6 +1,10 @@
+import time
+from math import floor
 import numpy as np
 import cv2
 
+from scipy.sparse import csr_matrix
+import imageio
 
 EPS = 1e-8
 
@@ -24,16 +28,32 @@ def backproject_corners(K, width, height, depth, Rt):
         (width, 0, 1),
         (0, height, 1),
         (width, height, 1),
-    ), dtype=np.float32).reshape(2, 2, 3)
-    
+    ), dtype=np.float32).reshape(2,2,3)
+
+    # new_points=np.zeros((4,3))
+    # print("inside")
+    callibrated_coord=np.linalg.inv(K)@points.transpose(2,0,1).reshape(3,-1)
+    depth_plane_cord=depth*callibrated_coord
+    depth_plane_homo_cord=np.vstack((depth_plane_cord,np.ones((1,4))))
+    Rt=np.vstack((Rt,np.array([[0,0,0,1]])))
+    world_coord=np.linalg.inv(Rt)@depth_plane_homo_cord
+    # print(world_coord)
+    world_coord=world_coord[:-1,:]
+    points=world_coord.reshape(3,-1,1).transpose(1,0,2).reshape(2,2,3)
+    # print(points)
+    # Rt=np.vstack((Rt,np.array([0,0,0,1])))
+    # print(Rt)
+    # for pts in points:
+    #     callibrated_coord=np.linalg.inv(K)@pts
+    #     depth_plane_cord=depth*callibrated_coord
+    #     depth_plane_homo_cord=np.hstack((depth_plane_cord,1))
+    #     print(depth_plane_homo_cord)
+    #     world_coord=np.linalg.inv(Rt)@depth_plane_homo_cord
+    #     print(world_coord)
 
     """ YOUR CODE HERE
     """
-    multiplier = depth * np.linalg.inv(K)                                   #(3x3)
-    points = points.reshape(4,3)                                            #(4x3)
-    points = np.matmul(multiplier, points.T)                                #(3x4)
-    points = np.matmul(np.linalg.inv(Rt[:,:3]), (points - Rt[:,3].reshape(3,1))).T  #(4x3)
-    points = points.reshape((2,2,3))
+
     """ END YOUR CODE
     """
     return points
@@ -44,34 +64,28 @@ def project_points(K, Rt, points):
     Input:
         K -- camera intrinsics calibration matrix
         Rt -- 3 x 4 camera extrinsics calibration matrix
-        points -- points_height x points_width x 3 array of 3D points
+        points -- height x width x 3 array of 3D points
     Output:
-        projections -- points_height x points_width x 2 array of 2D projections
+        projections -- height x width x 2 array of 2D projections
     """
     """ YOUR CODE HERE
     """
-    h = points.shape[0]
-    w = points.shape[1]
-    points = points.reshape(h*w,3)                                                  #((h*w)x3) =  (Nx3)
-    points = points.T                                                               #(3xN)
-    ones = np.ones(h*w)
-    calibrated_world_points = np.vstack((points, ones))                             #(4xN)
-    calibrated_camera_points = np.matmul(K, np.matmul(Rt, calibrated_world_points)) #((3x3) @ (3x4) @ (4xN)) = (3xN)
-    calibrated_camera_points = calibrated_camera_points/calibrated_camera_points[2,:]   #NORMALIZE
-    calibrated_camera_points = calibrated_camera_points[:2,:]                       #(2xN)
-    calibrated_camera_points = calibrated_camera_points.T                           #(Nx2)
-    points = calibrated_camera_points.reshape((h,w,2))                              #(h,w,2)
-    
+    ones_arr=np.ones((points.shape[0],points.shape[1]))
+    homo_points=np.dstack((points,ones_arr))
+    homo_points_camera=np.einsum('ij,abj->abi',Rt,homo_points)
+    points=np.einsum('ij,abj->abi',K,homo_points_camera)
+    points=points[:,:,:-1]/points[:,:,2][:,:,None]
+    # print(points.shape)
     """ END YOUR CODE
     """
     return points
 
-def warp_neighbor_to_ref(backproject_fn, project_fn, depth, neighbor_rgb, K_ref, Rt_ref, K_neighbor, Rt_neighbor):
+def warp_neighbor_to_ref(backproject_fn, project_fn,depth, neighbor_rgb, K_ref, Rt_ref, K_neighbor, Rt_neighbor):
     """ 
     Warp the neighbor view into the reference view 
     via the homography induced by the imaginary depth plane at the specified depth
 
-    Make use of the functions you've implemented in the same file (which are passed in as arguments):
+    Make use of the functions you've implemented in the same file:
     - backproject_corners
     - project_points
 
@@ -80,8 +94,6 @@ def warp_neighbor_to_ref(backproject_fn, project_fn, depth, neighbor_rgb, K_ref,
     - cv2.warpPerspective
 
     Input:
-        backproject_fn -- backproject_corners function
-        project_fn -- project_points function
         depth -- scalar value of the depth at the imaginary depth plane
         neighbor_rgb -- height x width x 3 array of neighbor rgb image
         K_ref -- 3 x 3 camera intrinsics calibration matrix of reference view
@@ -92,40 +104,24 @@ def warp_neighbor_to_ref(backproject_fn, project_fn, depth, neighbor_rgb, K_ref,
         warped_neighbor -- height x width x 3 array of the warped neighbor RGB image
     """
 
+    # Unproject the pixel coordinates from the right camera onto the virtual
+    # plane.
+
     height, width = neighbor_rgb.shape[:2]
 
     """ YOUR CODE HERE
     """
-    actual_corners = np.array((
-        (0, 0),
-        (width, 0),
-        (0, height),
-        (width, height),
-    ), dtype=np.float32).reshape(2, 2, 2)
-    
-    #step 1 : corners in reference view image plane backprojected to imaginary depth plane
-    src_corners = backproject_fn(K_ref, width, height, depth, Rt_ref)
-    #print(src_corners)
-    #print(src_corners.shape)        #(2, 2, 3)
-    
-    #step 2 : project 3D depth plane corner points to calibrated camera. This calibrated camera is the neighboring one
-    dst_corners = project_fn(K_neighbor, Rt_neighbor, src_corners)
-    #print(dst_corners)
-    #print(dst_corners.shape)        #(2, 2, 2)
-    
-    #step 3 : reshape the actual and destination corners
-    actual_corners = actual_corners.reshape((-1,2))
-    dst_corners = dst_corners.reshape((-1,2))
-
-    #step 4 : find homography between the dst_corners and actual_corners
-    H, _ = cv2.findHomography(dst_corners, actual_corners)
-    
-    #step 5 : warp perspective to warp other points of neighbor_rgb
-    warped_neighbor = cv2.warpPerspective(neighbor_rgb, H, (width, height))
-    #print(warped_neighbor)
-      
+    Rt_ref=np.vstack((Rt_ref,np.array([[0,0,0,1]])))
+    Rt_neighbor=np.vstack((Rt_neighbor,np.array([[0,0,0,1]])))
+    transformation_matrix=Rt_neighbor@np.linalg.inv(Rt_ref)
+    inv_depth=1/depth
+    homography_matrix=K_neighbor@(transformation_matrix[:-1,:-1]+inv_depth*np.matmul(transformation_matrix[:-1,-1].reshape(-1,1),np.array([[0,0,1]])))@np.linalg.inv(K_ref)
+    warped_neighbor=cv2.warpPerspective(neighbor_rgb,np.linalg.inv(homography_matrix),(width,height))
     """ END YOUR CODE
+
     """
+    print(transformation_matrix)
+    print(transformation_matrix[:-1,-1])
     return warped_neighbor
 
 
@@ -150,20 +146,32 @@ def zncc_kernel_2D(src, dst):
 
     """ YOUR CODE HERE
     """
-    src_mean = np.mean(src, axis = 2)
-    #print(src_mean.shape)      #must be 475x611x3
-    dst_mean = np.mean(dst, axis = 2)
-    src_std_dev = np.std(src, axis = 2)
-    dst_std_dev = np.std(dst, axis = 2)
-    
-    zncc_total = np.empty((src.shape[0], src.shape[1], src.shape[3])) #475x611x3
-    
-    for channel in range(src.shape[3]):
-        for h in range(src.shape[0]):
-            for w in range(src.shape[1]):
-                zncc_total[h,w, channel] = np.sum(np.multiply(src[h,w,:,channel]-src_mean[h,w,channel], dst[h,w,:,channel]-dst_mean[h,w,channel]))/(np.multiply(src_std_dev[h,w, channel], dst_std_dev[h,w, channel])+EPS)
 
-    zncc = np.sum(zncc_total, axis = 2)
+    r_channel_src=src[:,:,:,0]
+    g_channel_src=src[:,:,:,1]
+    b_channel_src=src[:,:,:,2]
+
+    r_channel_dst=dst[:,:,:,0]
+    g_channel_dst=dst[:,:,:,1]
+    b_channel_dst=dst[:,:,:,2]
+
+    # print((r_channel_src-np.mean(r_channel_src,axis=1).reshape(-1,1)).shape)
+    # print(np.mean(r_channel_src,axis=2))
+    # print(np.mean(r_channel_src,axis=2).shape)
+    mean_norm_r_src = (r_channel_src-np.mean(r_channel_src,axis=2).reshape(src.shape[0],src.shape[1],1))/(np.linalg.norm((r_channel_src-np.mean(r_channel_src,axis=2).reshape(src.shape[0],src.shape[1],1)),axis=2).reshape(src.shape[0],src.shape[1],1)/np.sqrt(src.shape[2])+EPS)
+    mean_norm_g_src = (g_channel_src-np.mean(g_channel_src,axis=2).reshape(src.shape[0],src.shape[1],1))/(np.linalg.norm((g_channel_src-np.mean(g_channel_src,axis=2).reshape(src.shape[0],src.shape[1],1)),axis=2).reshape(src.shape[0],src.shape[1],1)/np.sqrt(src.shape[2])+EPS)
+    mean_norm_b_src = (b_channel_src-np.mean(b_channel_src,axis=2).reshape(src.shape[0],src.shape[1],1))/(np.linalg.norm((b_channel_src-np.mean(b_channel_src,axis=2).reshape(src.shape[0],src.shape[1],1)),axis=2).reshape(src.shape[0],src.shape[1],1)/np.sqrt(src.shape[2])+EPS)    
+    
+    mean_norm_r_dst = (r_channel_dst-np.mean(r_channel_dst,axis=2).reshape(src.shape[0],src.shape[1],1))/(np.linalg.norm((r_channel_dst-np.mean(r_channel_dst,axis=2).reshape(src.shape[0],src.shape[1],1)),axis=2).reshape(src.shape[0],src.shape[1],1)/np.sqrt(src.shape[2])+EPS)
+    mean_norm_g_dst = (g_channel_dst-np.mean(g_channel_dst,axis=2).reshape(src.shape[0],src.shape[1],1))/(np.linalg.norm((g_channel_dst-np.mean(g_channel_dst,axis=2).reshape(src.shape[0],src.shape[1],1)),axis=2).reshape(src.shape[0],src.shape[1],1)/np.sqrt(src.shape[2])+EPS)
+    mean_norm_b_dst = (b_channel_dst-np.mean(b_channel_dst,axis=2).reshape(src.shape[0],src.shape[1],1))/(np.linalg.norm((b_channel_dst-np.mean(b_channel_dst,axis=2).reshape(src.shape[0],src.shape[1],1)),axis=2).reshape(src.shape[0],src.shape[1],1)/np.sqrt(src.shape[2])+EPS)       
+
+    # mean_norm_r_dst = (r_channel_dst-np.mean(r_channel_dst,axis=1).reshape(-1,1))/(np.linalg.norm((r_channel_dst-np.mean(r_channel_dst,axis=1).reshape(-1,1)),axis=1).reshape(-1,1)/np.sqrt(src.shape[1])+EPS)
+    # mean_norm_g_dst = (g_channel_dst-np.mean(g_channel_dst,axis=1).reshape(-1,1))/(np.linalg.norm((g_channel_dst-np.mean(g_channel_dst,axis=1).reshape(-1,1)),axis=1).reshape(-1,1)/np.sqrt(src.shape[1])+EPS)
+    # mean_norm_b_dst = (b_channel_dst-np.mean(b_channel_dst,axis=1).reshape(-1,1))/(np.linalg.norm((b_channel_dst-np.mean(b_channel_dst,axis=1).reshape(-1,1)),axis=1).reshape(-1,1)/np.sqrt(src.shape[1])+EPS)
+
+    zncc=np.sum(mean_norm_r_src*mean_norm_r_dst+mean_norm_g_src*mean_norm_g_dst+mean_norm_b_src*mean_norm_b_dst,axis=2)
+
     """ END YOUR CODE
     """
 
@@ -184,29 +192,15 @@ def backproject(dep_map, K):
 
     """ YOUR CODE HERE
     """
-    u0 = K[0,2]
-    v0 = K[1,2]
-    fX = K[0,0]
-    fY = K[1,1]
+    xv_c = (_u-K[0,2])/K[0,0]
+    yv_c = (_v-K[1,2])/K[1,1]
+    z=dep_map
+    xyz_cam=np.zeros((dep_map.shape[0],dep_map.shape[1],3))
+    xyz_cam[:,:,0]=z*xv_c
+    xyz_cam[:,:,1]=z*yv_c
+    xyz_cam[:,:,2]=z
     
-    xyz_cam = np.stack([np.multiply((_u.flatten()-u0), dep_map.flatten())/fX, np.multiply((_v.flatten()-v0), dep_map.flatten())/fY, dep_map.flatten()]).T
-    xyz_cam = xyz_cam.reshape((dep_map.shape[0],dep_map.shape[1],3))  
     """ END YOUR CODE
     """
     return xyz_cam
 
-### DELETE BELOW THIS LINE ###
-'''
-K = np.array([[1.5204e+03, 0.0000e+00, 3.0232e+02],
- [0.0000e+00, 1.5259e+03, 2.4687e+02],
- [0.0000e+00, 0.0000e+00 ,1.0000e+00]])
-
-width = 640
-height = 480
-depth = 0.5
-Rt = np.array(([[-0.12459423,  0.98895929 ,-0.08022345 ,-0.02132782],
- [ 0.28153513, -0.04229297, -0.95861842, -0.05858865],
- [-0.95142748, -0.14202405, -0.27315732,  0.57767114]]))
-
-print(backproject_corners(K, width, height, depth, Rt).shape)
-'''
